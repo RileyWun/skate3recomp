@@ -10,6 +10,12 @@ The game is currently capable of running at ~165FPS at 4K with MSAA, using an RT
 
 The project does not include Skate 3 retail game files. To run or build the project, you must provide files from your own legally obtained Xbox 360 copy of Skate 3.
 
+Gameplay (click to go to YouTube):
+
+<a href="https://www.youtube.com/watch?v=FHym2iQROa0">
+  <img src="https://img.youtube.com/vi/FHym2iQROa0/maxresdefault.jpg" alt="Skate 3 Recomp gameplay" width="420">
+</a>
+
 ## How Do I Play?
 
 ### Windows
