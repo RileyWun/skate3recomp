@@ -6,6 +6,7 @@
 #include <cctype>
 #include <chrono>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <fstream>
 #include <memory>
@@ -25,11 +26,17 @@
 #include <windows.h>
 
 #include <rex/ui/window_win.h>
+#elif defined(__APPLE__)
 #else
 #include <gtk/gtk.h>
 #endif
 
 namespace skate3 {
+
+#if defined(__APPLE__)
+std::filesystem::path PickIsoFileMacOS();
+#endif
+
 namespace {
 
 constexpr uint64_t kSectorSize = 2048;
@@ -92,6 +99,10 @@ std::filesystem::path PickIsoFile() {
     return {};
   }
   return filename;
+}
+#elif defined(__APPLE__)
+std::filesystem::path PickIsoFile() {
+  return skate3::PickIsoFileMacOS();
 }
 #else
 std::filesystem::path PickIsoFile() {
@@ -352,6 +363,38 @@ bool IsGameInstalled(const std::filesystem::path& game_root) {
   return std::filesystem::is_regular_file(game_root / std::string(kDefaultXex));
 }
 
+void ShowRexglueIsoInstallWizard(rex::ui::ImGuiDrawer* drawer, rex::PathConfig runtime_paths,
+                                 std::function<void(rex::PathConfig)> complete) {
+  auto pick_source = []() { return PickIsoFile(); };
+  auto install = [game_root = runtime_paths.game_data_root](
+                     const std::filesystem::path& source, std::atomic<uint64_t>& copied_bytes,
+                     std::atomic<uint64_t>& total_bytes, std::string& error) {
+    XboxIsoReader iso;
+    if (!iso.Open(source, error)) {
+      return false;
+    }
+    total_bytes = iso.TotalSize();
+    if (!iso.ExtractAll(game_root, copied_bytes, error)) {
+      return false;
+    }
+    if (!IsGameInstalled(game_root)) {
+      error = "Installation completed, but default.xex was not found in the install directory.";
+      return false;
+    }
+    return true;
+  };
+
+  new rex::ui::InstallWizardDialog(
+      drawer, "Skate 3 Setup",
+      "Skate 3 game files were not found. Select your Xbox 360 ISO to install them.",
+      runtime_paths.game_data_root.string(), std::move(pick_source), std::move(install),
+      [runtime_paths = std::move(runtime_paths), complete = std::move(complete)]() mutable {
+        if (complete) {
+          complete(std::move(runtime_paths));
+        }
+      });
+}
+
 bool RunRexglueIsoInstallWizardBlocking(rex::ui::WindowedAppContext& app_context,
                                         rex::ui::Window* window,
                                         rex::ui::ImGuiDrawer* drawer,
@@ -364,7 +407,6 @@ bool RunRexglueIsoInstallWizardBlocking(rex::ui::WindowedAppContext& app_context
   };
 
   auto result = std::make_shared<InstallResult>();
-  auto pick_source = []() { return PickIsoFile(); };
   auto install = [game_root = runtime_paths.game_data_root](
                      const std::filesystem::path& source, std::atomic<uint64_t>& copied_bytes,
                      std::atomic<uint64_t>& total_bytes, std::string& error) {
@@ -398,15 +440,12 @@ bool RunRexglueIsoInstallWizardBlocking(rex::ui::WindowedAppContext& app_context
     return true;
   }
 
-  new rex::ui::InstallWizardDialog(
-      drawer, "Skate 3 Setup",
-      "Skate 3 game files were not found. Select your Xbox 360 ISO to install them.",
-      runtime_paths.game_data_root.string(), std::move(pick_source), std::move(install),
-      [result, runtime_paths = std::move(runtime_paths)]() mutable {
-        result->paths = std::move(runtime_paths);
-        result->ok = true;
-        result->done = true;
-      });
+  ShowRexglueIsoInstallWizard(drawer, runtime_paths,
+                              [result](rex::PathConfig runtime_paths) mutable {
+                                result->paths = std::move(runtime_paths);
+                                result->ok = true;
+                                result->done = true;
+                              });
 
 #if defined(_WIN32)
   HWND hwnd = nullptr;
@@ -442,9 +481,11 @@ bool RunRexglueIsoInstallWizardBlocking(rex::ui::WindowedAppContext& app_context
     if (window) {
       window->RequestPaint();
     }
+#if !defined(__APPLE__)
     while (gtk_events_pending()) {
       gtk_main_iteration_do(FALSE);
     }
+#endif
 #endif
     std::this_thread::sleep_for(std::chrono::milliseconds(16));
   }

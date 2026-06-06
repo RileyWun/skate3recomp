@@ -5,6 +5,9 @@ project(skate3 VERSION 1.0.0 LANGUAGES CXX)
 if(WIN32)
     enable_language(RC)
 endif()
+if(APPLE)
+    enable_language(OBJCXX)
+endif()
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -16,24 +19,38 @@ skate3_resolve_version(SKATE3_FULL_VERSION
     SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR})
 string(REGEX REPLACE "-.*$" "" SKATE3_NUMERIC_VERSION "${SKATE3_FULL_VERSION}")
 
+set(SKATE3_TARGET_PROCESSOR "${CMAKE_SYSTEM_PROCESSOR}")
+if(APPLE AND CMAKE_OSX_ARCHITECTURES)
+    list(LENGTH CMAKE_OSX_ARCHITECTURES SKATE3_OSX_ARCH_COUNT)
+    if(SKATE3_OSX_ARCH_COUNT EQUAL 1)
+        set(SKATE3_TARGET_PROCESSOR "${CMAKE_OSX_ARCHITECTURES}")
+    endif()
+endif()
+
 if(WIN32)
-    if(CMAKE_SYSTEM_PROCESSOR MATCHES "AMD64|x86_64")
+    if(SKATE3_TARGET_PROCESSOR MATCHES "AMD64|x86_64")
         set(SKATE3_BUILD_PLATFORM "win-amd64")
-    elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|ARM64")
+    elseif(SKATE3_TARGET_PROCESSOR MATCHES "aarch64|ARM64")
         set(SKATE3_BUILD_PLATFORM "win-arm64")
     else()
-        set(SKATE3_BUILD_PLATFORM "win-${CMAKE_SYSTEM_PROCESSOR}")
+        set(SKATE3_BUILD_PLATFORM "win-${SKATE3_TARGET_PROCESSOR}")
+    endif()
+elseif(APPLE)
+    if(SKATE3_TARGET_PROCESSOR MATCHES "aarch64|arm64|ARM64")
+        set(SKATE3_BUILD_PLATFORM "macos-arm64")
+    else()
+        message(FATAL_ERROR "Unsupported macOS architecture: ${SKATE3_TARGET_PROCESSOR}. macOS builds are ARM64-only.")
     endif()
 elseif(UNIX AND NOT APPLE)
-    if(CMAKE_SYSTEM_PROCESSOR MATCHES "AMD64|x86_64")
+    if(SKATE3_TARGET_PROCESSOR MATCHES "AMD64|x86_64")
         set(SKATE3_BUILD_PLATFORM "linux-amd64")
-    elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|ARM64")
+    elseif(SKATE3_TARGET_PROCESSOR MATCHES "aarch64|ARM64")
         set(SKATE3_BUILD_PLATFORM "linux-arm64")
     else()
-        set(SKATE3_BUILD_PLATFORM "linux-${CMAKE_SYSTEM_PROCESSOR}")
+        set(SKATE3_BUILD_PLATFORM "linux-${SKATE3_TARGET_PROCESSOR}")
     endif()
 else()
-    set(SKATE3_BUILD_PLATFORM "${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}")
+    set(SKATE3_BUILD_PLATFORM "${CMAKE_SYSTEM_NAME}-${SKATE3_TARGET_PROCESSOR}")
 endif()
 
 string(TIMESTAMP SKATE3_BUILD_TIMESTAMP "%Y%m%d_%H%M")
@@ -50,7 +67,7 @@ set(SKATE3_GAME_DATA_ROOT
     "${CMAKE_CURRENT_SOURCE_DIR}/game"
     CACHE PATH "Path to an extracted Skate 3 retail game dump")
 
-if(CMAKE_SYSTEM_PROCESSOR MATCHES "AMD64|x86_64")
+if(NOT APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "AMD64|x86_64")
     if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
         add_compile_options(-march=x86-64-v3)
         set(SNAPPY_REQUIRE_AVX2 ON CACHE BOOL
@@ -82,7 +99,7 @@ configure_file(
     @ONLY
 )
 set(REXGLUE_ENABLE_TRACY OFF CACHE BOOL "Disable Tracy instrumentation for normal Skate 3 builds" FORCE)
-set(REXGLUE_ENABLE_PERF_COUNTERS OFF CACHE BOOL "Enable lightweight rexglue perf counter instrumentation" FORCE)
+set(REXGLUE_ENABLE_PERF_COUNTERS OFF CACHE BOOL "Enable lightweight rexglue perf counter instrumentation")
 
 include(cmake/RexGlue.cmake)
 include(cmake/CodegenTargets.cmake)
@@ -93,6 +110,9 @@ set(SKATE3_COMMON_SOURCES
     src/skate3_iso_installer.cpp
     src/skate3_user_settings.cpp
 )
+if(APPLE)
+    list(APPEND SKATE3_COMMON_SOURCES src/skate3_iso_installer_macos.mm)
+endif()
 
 set(SKATE3_SOURCES
     src/main.cpp
@@ -139,6 +159,11 @@ endif()
 
 target_link_libraries(skate3 PRIVATE rex::runtime)
 rexglue_configure_target(skate3)
+
+if(APPLE)
+    target_link_options(skate3 PRIVATE -Wl,-stack_size,0x4000000)
+    target_link_libraries(skate3 PRIVATE "-framework Cocoa")
+endif()
 
 if(WIN32)
     target_link_libraries(skate3 PRIVATE comdlg32)

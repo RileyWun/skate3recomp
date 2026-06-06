@@ -15,6 +15,7 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 #if defined(_WIN32)
@@ -25,8 +26,11 @@
 #define NOMINMAX
 #endif
 #include <Windows.h>
-#elif defined(__linux__)
+#elif defined(__linux__) || defined(__APPLE__)
 #include <spawn.h>
+#if defined(__APPLE__)
+#include <crt_externs.h>
+#endif
 #endif
 
 #include <rex/cvar.h>
@@ -37,6 +41,7 @@
 #include <rex/input/input_system.h>
 #include <rex/kernel/xam/module.h>
 #include <rex/logging.h>
+#include <rex/platform.h>
 #include <rex/perf/counter.h>
 #include <rex/ppc/context.h>
 #include <rex/system/function_dispatcher.h>
@@ -49,7 +54,7 @@
 #include <imgui.h>
 #include <toml++/toml.hpp>
 
-#if defined(__linux__)
+#if defined(__linux__) || defined(__APPLE__)
 extern char** environ;
 #endif
 
@@ -61,10 +66,18 @@ extern "C" REX_FUNC(__restgprlr_19);
 
 namespace {
 
-#if defined(__linux__)
+#if defined(__linux__) || defined(__APPLE__)
 std::vector<std::string> CurrentProcessArgumentsForRestart(
     const std::filesystem::path& executable_path) {
   std::vector<std::string> args;
+#if defined(__APPLE__)
+  int argc = *_NSGetArgc();
+  char** argv = *_NSGetArgv();
+  args.reserve(static_cast<size_t>(argc > 0 ? argc : 1));
+  for (int i = 0; i < argc; ++i) {
+    args.emplace_back(argv[i] ? argv[i] : "");
+  }
+#else
   std::ifstream cmdline("/proc/self/cmdline", std::ios::binary);
   std::string arg;
   char ch = 0;
@@ -79,6 +92,7 @@ std::vector<std::string> CurrentProcessArgumentsForRestart(
   if (!arg.empty()) {
     args.push_back(std::move(arg));
   }
+#endif
 
   const std::string executable = rex::path_to_utf8(executable_path);
   if (args.empty()) {
@@ -87,6 +101,28 @@ std::vector<std::string> CurrentProcessArgumentsForRestart(
     args[0] = executable;
   }
   return args;
+}
+
+void SetRestartArgument(std::vector<std::string>& args, std::string name, std::string value) {
+  const std::string option = "--" + name;
+  const std::string option_with_equals = option + "=";
+  for (size_t i = 1; i < args.size(); ++i) {
+    if (args[i] == option) {
+      if (i + 1 < args.size()) {
+        args[i + 1] = std::move(value);
+      } else {
+        args.push_back(std::move(value));
+      }
+      return;
+    }
+    if (args[i].starts_with(option_with_equals)) {
+      args[i] = option_with_equals + value;
+      return;
+    }
+  }
+
+  args.push_back(std::move(option));
+  args.push_back(std::move(value));
 }
 #endif
 
@@ -190,6 +226,19 @@ void LoadAndNormalizeSimpleSettings(const std::filesystem::path& settings_path,
   rex::ui::EnsureSimpleSettingsConfig(settings_path);
 }
 
+std::filesystem::path ResolveRuntimeGameDataRoot(const rex::PathConfig& paths) {
+  if (!paths.game_data_root.empty()) {
+    return paths.game_data_root;
+  }
+
+  const auto working_directory_game = std::filesystem::current_path() / "game";
+  if (skate3::IsGameInstalled(working_directory_game)) {
+    return working_directory_game;
+  }
+
+  return paths.config_path.parent_path() / "game";
+}
+
 const char* FirstExistingFontPath(std::initializer_list<const char*> paths) {
   for (const char* path : paths) {
     if (std::filesystem::exists(path)) {
@@ -283,13 +332,19 @@ std::optional<rex::PathConfig> Skate3BaseApp::OnFinalizePaths(
     skate3::SaveProfiles(profiles_path_, profiles);
   }
   auto runtime_paths = defaults;
-  if (runtime_paths.game_data_root.empty()) {
-    runtime_paths.game_data_root = config_path_.parent_path() / "game";
-  }
+  runtime_paths.game_data_root = ResolveRuntimeGameDataRoot(runtime_paths);
   runtime_paths.config_path.clear();
   if (!skate3::IsGameInstalled(runtime_paths.game_data_root)) {
     REXLOG_INFO("Game files not found at {}; launching rexglue ISO installer",
                 runtime_paths.game_data_root.string());
+#if defined(__APPLE__)
+    if (const char* automated_iso = std::getenv("SKATE3_INSTALL_ISO");
+        automated_iso == nullptr || *automated_iso == '\0') {
+      skate3::ShowRexglueIsoInstallWizard(imgui_drawer(), std::move(runtime_paths),
+                                          std::move(resume));
+      return std::nullopt;
+    }
+#endif
     rex::PathConfig installed_paths;
     const bool installed = skate3::RunRexglueIsoInstallWizardBlocking(
         app_context(), window(), imgui_drawer(), runtime_paths, installed_paths);
@@ -357,6 +412,7 @@ void Skate3BaseApp::OnPostSetup() {
 
 void Skate3BaseApp::OnPostLaunchModule(rex::system::XThread* thread) {
   (void)thread;
+
   if (std::getenv("SKATE3_INVALIDATE_GPU_MEMORY_EVERY_FRAME") == nullptr) {
     return;
   }
@@ -445,12 +501,23 @@ void Skate3BaseApp::ToggleSimpleSettings() {
   };
   auto close_settings = [this]() { ApplyGameplayCursorMode(); };
   auto close_game = [this]() {
+#if REX_PLATFORM_MAC
+    std::thread([]() {
+      std::this_thread::sleep_for(std::chrono::seconds(10));
+      REXLOG_WARN("macOS Close Game watchdog exiting process after shutdown timeout");
+      std::_Exit(EXIT_SUCCESS);
+    }).detach();
+#endif
     app_context().CallInUIThreadDeferred([this]() {
+#if REX_PLATFORM_MAC
+      app_context().QuitFromUIThread();
+#else
       if (window()) {
         window()->RequestClose();
       } else {
         app_context().QuitFromUIThread();
       }
+#endif
     });
   };
   auto restart_game = [this]() { RestartGame(); };
@@ -494,7 +561,7 @@ void Skate3BaseApp::RestartGame() {
     }
     CloseHandle(process_info.hThread);
     CloseHandle(process_info.hProcess);
-#elif defined(__linux__)
+#elif defined(__linux__) || defined(__APPLE__)
     const auto executable_path = rex::filesystem::GetExecutablePath();
     if (executable_path.empty()) {
       REXLOG_WARN("Restart requested, but the executable path could not be resolved");
@@ -502,6 +569,16 @@ void Skate3BaseApp::RestartGame() {
     }
 
     auto args = CurrentProcessArgumentsForRestart(executable_path);
+    std::filesystem::path restart_game_data_root;
+    if (runtime()) {
+      restart_game_data_root = runtime()->game_data_root();
+    }
+    if (restart_game_data_root.empty()) {
+      restart_game_data_root = game_data_root();
+    }
+    if (!restart_game_data_root.empty()) {
+      SetRestartArgument(args, "game_data_root", rex::path_to_utf8(restart_game_data_root));
+    }
     std::vector<char*> argv;
     argv.reserve(args.size() + 1);
     for (auto& arg : args) {
@@ -523,11 +600,15 @@ void Skate3BaseApp::RestartGame() {
     return;
 #endif
 
+  #if REX_PLATFORM_MAC
+    app_context().QuitFromUIThread();
+  #else
     if (window()) {
       window()->RequestClose();
     } else {
       app_context().QuitFromUIThread();
     }
+  #endif
   });
 }
 
