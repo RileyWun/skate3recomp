@@ -48,6 +48,17 @@ Gameplay (click to go to YouTube):
 6. Wait for the installer to extract the game files.
 7. Click "Start Game".
 
+### DLC
+
+Skate3Recomp does not include Skate 3 DLC files. To use DLC, provide package
+files from your own legally obtained Xbox 360 DLC.
+
+Create a `dlc` folder beside the executable, inside the installed game folder,
+or in the Skate3Recomp user data folder. Place the DLC package files in that
+folder and start the game. Skate3Recomp will validate matching Skate 3
+marketplace packages and install them into the local content store
+automatically.
+
 ## Controls
 
 - Standard Xbox controls using an Xbox controller are the preferred and main input method. DualShock and others are untested, but are likely to work with Steam Input through XInput.

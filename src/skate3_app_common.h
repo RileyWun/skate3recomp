@@ -35,6 +35,7 @@ class Skate3BaseApp : public rex::ReXApp {
  private:
   void InstallRecipeOverlay();
   void InstallBigDeviceAliases();
+  void InstallDlcPackages();
   void ToggleSimpleSettings();
   void ApplySettingsCursorMode();
   void ApplyGameplayCursorMode();

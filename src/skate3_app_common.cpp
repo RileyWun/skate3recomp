@@ -16,6 +16,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <unordered_set>
 #include <vector>
 
 #if defined(_WIN32)
@@ -35,6 +36,7 @@
 
 #include <rex/cvar.h>
 #include <rex/filesystem.h>
+#include <rex/filesystem/devices/stfs_container_device.h>
 #include <rex/filesystem/devices/host_path_device.h>
 #include <rex/filesystem/vfs.h>
 #include <rex/input/input_system.h>
@@ -45,6 +47,8 @@
 #include <rex/ppc/context.h>
 #include <rex/system/function_dispatcher.h>
 #include <rex/system/kernel_state.h>
+#include <rex/system/xam/content_device.h>
+#include <rex/system/xam/content_manager.h>
 #include <rex/system/xam/user_profile.h>
 #include <rex/system.h>
 #include <rex/ui/keybinds.h>
@@ -62,6 +66,11 @@ extern const rex::PPCImageInfo eawebkit_PPCImageConfig;
 // Register multi-entry-function alternate entries that rex's analyzer can't
 // lift via config because they overlap with auto-discovered parent functions.
 extern "C" REX_FUNC(__restgprlr_19);
+
+REXCVAR_DEFINE_STRING(skate3_dlc_root, "", "Skate 3",
+                      "Directory containing Skate 3 DLC package files");
+REXCVAR_DEFINE_BOOL(skate3_auto_install_dlc, true, "Skate 3",
+                    "Install DLC package files found in configured DLC folders");
 
 namespace {
 
@@ -127,6 +136,7 @@ void SetRestartArgument(std::vector<std::string>& args, std::string name, std::s
 
 constexpr std::string_view kUserDirectoryName = "skate3";
 constexpr std::string_view kSettingsFilename = "settings.toml";
+constexpr std::string_view kDlcDirectoryName = "dlc";
 
 std::filesystem::path DefaultDocumentsUserRoot() {
   return rex::filesystem::GetUserFolder() / std::string(kUserDirectoryName);
@@ -254,6 +264,66 @@ const char* FirstExistingFontPath(std::initializer_list<const char*> paths) {
     }
   }
   return nullptr;
+}
+
+std::string Hex8(uint32_t value) {
+  std::ostringstream stream;
+  stream << std::uppercase << std::hex << std::setw(8) << std::setfill('0') << value;
+  return stream.str();
+}
+
+std::filesystem::path InstalledMarketplaceContentPath(const std::filesystem::path& content_root,
+                                                      uint32_t title_id,
+                                                      const std::filesystem::path& package_path) {
+  return content_root / "0000000000000000" / Hex8(title_id) / "00000002" /
+         package_path.filename();
+}
+
+std::filesystem::path InstalledMarketplaceHeaderPath(const std::filesystem::path& content_root,
+                                                     uint32_t title_id,
+                                                     const std::filesystem::path& package_path) {
+  return content_root / "0000000000000000" / Hex8(title_id) / "Headers" / "00000002" /
+         (package_path.filename().string() + ".header");
+}
+
+bool IsInstalledMarketplaceContent(const std::filesystem::path& content_root, uint32_t title_id,
+                                   const std::filesystem::path& package_path) {
+  return std::filesystem::is_directory(
+             InstalledMarketplaceContentPath(content_root, title_id, package_path)) &&
+         std::filesystem::is_regular_file(
+             InstalledMarketplaceHeaderPath(content_root, title_id, package_path));
+}
+
+std::vector<std::filesystem::path> DiscoverDlcSourceDirectories(
+    const std::filesystem::path& executable_root, const std::filesystem::path& game_data_root,
+    const std::filesystem::path& user_data_root) {
+  std::vector<std::filesystem::path> dirs;
+  auto add_dir = [&](std::filesystem::path dir) {
+    if (dir.empty()) {
+      return;
+    }
+    std::error_code ec;
+    dir = std::filesystem::absolute(dir, ec);
+    if (ec) {
+      return;
+    }
+    for (const auto& existing : dirs) {
+      if (std::filesystem::equivalent(existing, dir, ec)) {
+        return;
+      }
+      ec.clear();
+    }
+    dirs.push_back(std::move(dir));
+  };
+
+  const std::string configured_root = REXCVAR_GET(skate3_dlc_root);
+  if (!configured_root.empty()) {
+    add_dir(configured_root);
+  }
+  add_dir(executable_root / std::string(kDlcDirectoryName));
+  add_dir(game_data_root / std::string(kDlcDirectoryName));
+  add_dir(user_data_root / std::string(kDlcDirectoryName));
+  return dirs;
 }
 
 }  // namespace
@@ -411,6 +481,7 @@ void Skate3BaseApp::OnPostSetup() {
   if (std::getenv("SKATE3_DISABLE_BIG_ALIASES") == nullptr) {
     InstallBigDeviceAliases();
   }
+  InstallDlcPackages();
   InstallRecipeOverlay();
 
   // Register multi-entry-function alternate entries.
@@ -827,4 +898,109 @@ void Skate3BaseApp::InstallBigDeviceAliases() {
   runtime()->file_system()->RegisterSymbolicLink(
       "dlcbig:", "\\Device\\Harddisk0\\Partition1");
   big_device_aliases_installed_ = true;
+}
+
+void Skate3BaseApp::InstallDlcPackages() {
+  if (!REXCVAR_GET(skate3_auto_install_dlc) || !runtime() || !runtime()->kernel_state() ||
+      !runtime()->kernel_state()->content_manager()) {
+    return;
+  }
+
+  const uint32_t title_id = runtime()->kernel_state()->title_id();
+  if (title_id == 0) {
+    REXLOG_WARN("Skipping Skate 3 DLC install; title ID is not available");
+    return;
+  }
+
+  const auto user_dlc_root = runtime()->user_data_root() / std::string(kDlcDirectoryName);
+  std::error_code create_ec;
+  std::filesystem::create_directories(user_dlc_root, create_ec);
+  if (create_ec) {
+    REXLOG_WARN("Could not create Skate 3 DLC drop folder {}: {}", user_dlc_root.string(),
+                create_ec.message());
+  }
+
+  const auto source_dirs =
+      DiscoverDlcSourceDirectories(rex::filesystem::GetExecutableFolder(),
+                                   runtime()->game_data_root(), runtime()->user_data_root());
+  std::unordered_set<std::string> seen_packages;
+  size_t installed_count = 0;
+  size_t skipped_count = 0;
+
+  for (const auto& source_dir : source_dirs) {
+    if (!std::filesystem::is_directory(source_dir)) {
+      continue;
+    }
+
+    std::error_code iter_ec;
+    for (const auto& entry : std::filesystem::directory_iterator(source_dir, iter_ec)) {
+      if (iter_ec) {
+        REXLOG_WARN("Could not scan Skate 3 DLC folder {}: {}", source_dir.string(),
+                    iter_ec.message());
+        break;
+      }
+      if (!entry.is_regular_file()) {
+        continue;
+      }
+
+      const auto package_path = entry.path();
+      std::error_code canonical_ec;
+      auto package_key = std::filesystem::weakly_canonical(package_path, canonical_ec).string();
+      if (canonical_ec) {
+        package_key = std::filesystem::absolute(package_path).string();
+      }
+      if (!seen_packages.insert(package_key).second) {
+        continue;
+      }
+
+      const auto header = rex::filesystem::StfsContainerDevice::ReadPackageHeader(package_path);
+      if (!header) {
+        REXLOG_WARN("Skipping DLC candidate with invalid STFS header: {}", package_path.string());
+        ++skipped_count;
+        continue;
+      }
+
+      const auto content_type =
+          static_cast<rex::system::XContentType>(header->metadata.content_type);
+      if (content_type != rex::system::XContentType::kMarketplaceContent) {
+        REXLOG_WARN("Skipping non-DLC content package {} with type {:08X}",
+                    package_path.filename().string(), static_cast<uint32_t>(content_type));
+        ++skipped_count;
+        continue;
+      }
+
+      const uint32_t package_title_id = header->metadata.execution_info.title_id;
+      if (package_title_id != 0 && package_title_id != title_id) {
+        REXLOG_WARN("Skipping DLC package {} for title {:08X}; running title is {:08X}",
+                    package_path.filename().string(), package_title_id, title_id);
+        ++skipped_count;
+        continue;
+      }
+
+      if (IsInstalledMarketplaceContent(runtime()->user_data_root(), title_id, package_path)) {
+        REXLOG_INFO("DLC package already installed: {}", package_path.filename().string());
+        ++skipped_count;
+        continue;
+      }
+
+      REXLOG_INFO("Installing Skate 3 DLC package: {}", package_path.string());
+      const auto result = runtime()->kernel_state()->content_manager()->InstallContent(package_path);
+      if (result == 0) {
+        ++installed_count;
+        REXLOG_INFO("Installed Skate 3 DLC package: {}", package_path.filename().string());
+      } else {
+        ++skipped_count;
+        REXLOG_WARN("Failed to install Skate 3 DLC package {}: {:08X}",
+                    package_path.filename().string(), static_cast<uint32_t>(result));
+      }
+    }
+  }
+
+  if (installed_count || skipped_count) {
+    REXLOG_INFO("Skate 3 DLC scan complete: {} installed, {} skipped", installed_count,
+                skipped_count);
+  } else {
+    REXLOG_INFO("No Skate 3 DLC packages found. Drop legally obtained DLC package files in {}",
+                user_dlc_root.string());
+  }
 }
