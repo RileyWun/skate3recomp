@@ -12,6 +12,7 @@
 
 # Local runtime/config overrides
 skate3.toml
+skate3_ultrawide_targets*.toml
 CMakeUserPresets.json
 
 # Diagnostics and binary build products
