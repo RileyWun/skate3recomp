@@ -1,5 +1,6 @@
 add_custom_target(generate-skate3
     COMMAND $<TARGET_FILE:rex::rexglue> codegen
+            ${SKATE3_CODEGEN_ARGS}
             "${CMAKE_CURRENT_BINARY_DIR}/manifests/skate3.toml"
     COMMAND "${CMAKE_COMMAND}"
             "-DSKATE3_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
@@ -11,11 +12,17 @@ add_custom_target(generate-skate3
 
 add_custom_target(generate-eawebkit
     COMMAND $<TARGET_FILE:rex::rexglue> codegen
+            ${SKATE3_CODEGEN_ARGS}
             "${CMAKE_CURRENT_BINARY_DIR}/manifests/eawebkit.toml"
     WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
     COMMENT "Generating recompiled code for EAWebkit.xex"
     VERBATIM
 )
+
+if(TARGET skate3-title-update-codegen-inputs)
+    add_dependencies(generate-skate3 skate3-title-update-codegen-inputs)
+    add_dependencies(generate-eawebkit skate3-title-update-codegen-inputs)
+endif()
 
 add_dependencies(generate-skate3 generate-eawebkit)
 

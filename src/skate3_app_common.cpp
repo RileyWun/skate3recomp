@@ -2,6 +2,7 @@
 
 #include "skate3_fov.h"
 #include "skate3_iso_installer.h"
+#include "skate3_title_update_installer.h"
 #include "skate3_user_settings.h"
 
 #include <algorithm>
@@ -509,13 +510,15 @@ std::vector<std::filesystem::path> DiscoverDlcSourceDirectories(
 
 }  // namespace
 
-// sub_82EBAE4C: alternate entry into sub_82EBAE34 (37 vtable refs in .data).
+#if !SKATE3_HAS_TITLE_UPDATE
+// Retail sub_82EBAE4C: alternate entry into sub_82EBAE34 (37 vtable refs in .data).
 // Body: lwz r3, 0x164(r31); addi r1, r31, 0x140; b __restgprlr_19
 static void Sub82EBAE4CImpl(PPCContext& ctx, uint8_t* base) {
   ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 0x164);
   ctx.r1.s64 = ctx.r31.s64 + 0x140;
   __restgprlr_19(ctx, base);
 }
+#endif
 
 Skate3BaseApp::~Skate3BaseApp() = default;
 
@@ -612,8 +615,23 @@ std::optional<rex::PathConfig> Skate3BaseApp::OnFinalizePaths(
 #if defined(__APPLE__)
     if (const char* automated_iso = std::getenv("SKATE3_INSTALL_ISO");
         automated_iso == nullptr || *automated_iso == '\0') {
+#if SKATE3_HAS_TITLE_UPDATE
+      // Chain the title update wizard after the ISO install completes.
+      auto resume_after_title_update =
+          [this, resume = std::move(resume)](rex::PathConfig paths) mutable {
+            if (!skate3::IsTitleUpdateInstalled(paths.game_data_root)) {
+              skate3::ShowTitleUpdateInstallWizard(imgui_drawer(), std::move(paths),
+                                                   std::move(resume));
+              return;
+            }
+            resume(std::move(paths));
+          };
+      skate3::ShowRexglueIsoInstallWizard(imgui_drawer(), std::move(runtime_paths),
+                                          std::move(resume_after_title_update));
+#else
       skate3::ShowRexglueIsoInstallWizard(imgui_drawer(), std::move(runtime_paths),
                                           std::move(resume));
+#endif
       return std::nullopt;
     }
 #endif
@@ -624,8 +642,35 @@ std::optional<rex::PathConfig> Skate3BaseApp::OnFinalizePaths(
       app_context().QuitFromUIThread();
       return std::nullopt;
     }
-    return installed_paths;
+    runtime_paths = std::move(installed_paths);
   }
+
+#if SKATE3_HAS_TITLE_UPDATE
+  // This build executes Title Update 3 code; the game cannot boot without the
+  // TU payloads staged next to the installed game files. Existing installs
+  // from releases that predate TU support land here with the game present but
+  // the title update missing.
+  if (!skate3::IsTitleUpdateInstalled(runtime_paths.game_data_root)) {
+    REXLOG_INFO("Skate 3 Title Update 3 not staged at {}; launching title update installer",
+                runtime_paths.game_data_root.string());
+#if defined(__APPLE__)
+    if (const char* automated_tu = std::getenv("SKATE3_INSTALL_TU");
+        automated_tu == nullptr || *automated_tu == '\0') {
+      skate3::ShowTitleUpdateInstallWizard(imgui_drawer(), std::move(runtime_paths),
+                                           std::move(resume));
+      return std::nullopt;
+    }
+#endif
+    rex::PathConfig tu_paths;
+    const bool tu_installed = skate3::RunTitleUpdateInstallWizardBlocking(
+        app_context(), window(), imgui_drawer(), runtime_paths, tu_paths);
+    if (!tu_installed) {
+      app_context().QuitFromUIThread();
+      return std::nullopt;
+    }
+    runtime_paths = std::move(tu_paths);
+  }
+#endif
   return runtime_paths;
 }
 
@@ -676,8 +721,10 @@ void Skate3BaseApp::OnPostSetup() {
   InstallDlcPackages();
   InstallRecipeOverlay();
 
-  // Register multi-entry-function alternate entries.
+  // Register retail multi-entry-function alternate entries.
+#if !SKATE3_HAS_TITLE_UPDATE
   runtime()->function_dispatcher()->SetFunction(0x82EBAE4C, &Sub82EBAE4CImpl);
+#endif
 
   auto* dispatcher = runtime()->function_dispatcher();
   if (dispatcher->InitializeFunctionTable(eawebkit_PPCImageConfig.code_base,

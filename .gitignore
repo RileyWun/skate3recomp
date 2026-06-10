@@ -32,6 +32,6 @@ CMakeUserPresets.json
 /.vs/
 /.vscode/
 /.cache/
-/scripts/__pycache__/
-/scripts/extract_eb_big.py
-/scripts/extract_embedded_rx2.py
+
+# Local developer scripts (texture decoding, extraction, bootstrap helpers)
+/scripts/

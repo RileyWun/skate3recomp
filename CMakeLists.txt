@@ -66,6 +66,9 @@ set(REXSDK_DIR
 set(SKATE3_GAME_DATA_ROOT
     "${CMAKE_CURRENT_SOURCE_DIR}/game"
     CACHE PATH "Path to an extracted Skate 3 retail game dump")
+set(SKATE3_TITLE_UPDATE_PACKAGE
+    ""
+    CACHE FILEPATH "Optional Skate 3 title update STFS package used for codegen")
 
 if(NOT APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "AMD64|x86_64")
     if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
@@ -85,6 +88,79 @@ endif()
 
 file(TO_CMAKE_PATH "${CMAKE_CURRENT_SOURCE_DIR}" SKATE3_SOURCE_DIR_CONFIG)
 file(TO_CMAKE_PATH "${SKATE3_GAME_DATA_ROOT}" SKATE3_GAME_DATA_ROOT_CONFIG)
+
+set(SKATE3_EFFECTIVE_TITLE_UPDATE_PACKAGE "${SKATE3_TITLE_UPDATE_PACKAGE}")
+if(SKATE3_EFFECTIVE_TITLE_UPDATE_PACKAGE STREQUAL "")
+    set(SKATE3_LOCAL_TITLE_UPDATE_PACKAGE
+        "${CMAKE_CURRENT_SOURCE_DIR}/TU_12K2276_000000C000000.00000000000O3")
+    if(EXISTS "${SKATE3_LOCAL_TITLE_UPDATE_PACKAGE}")
+        set(SKATE3_EFFECTIVE_TITLE_UPDATE_PACKAGE "${SKATE3_LOCAL_TITLE_UPDATE_PACKAGE}")
+    endif()
+endif()
+
+set(SKATE3_PATCHED_DEFAULT_XEX_LINE "")
+set(SKATE3_PATCHED_EAWEBKIT_XEX_LINE "")
+set(SKATE3_CODEGEN_ARGS "")
+set(SKATE3_FUNCTION_CONFIG_INCLUDES
+    "  \"${SKATE3_SOURCE_DIR_CONFIG}/config/skate3_functions.toml\",")
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+if(NOT SKATE3_EFFECTIVE_TITLE_UPDATE_PACKAGE STREQUAL "")
+    if(NOT EXISTS "${SKATE3_EFFECTIVE_TITLE_UPDATE_PACKAGE}")
+        message(FATAL_ERROR
+            "SKATE3_TITLE_UPDATE_PACKAGE does not exist: ${SKATE3_EFFECTIVE_TITLE_UPDATE_PACKAGE}")
+    endif()
+
+    set(SKATE3_TITLE_UPDATE_CODEGEN_ROOT
+        "${CMAKE_CURRENT_BINARY_DIR}/title_update_codegen")
+    set(SKATE3_TITLE_UPDATE_DEFAULT_XEX
+        "${SKATE3_TITLE_UPDATE_CODEGEN_ROOT}/default.xex")
+    set(SKATE3_TITLE_UPDATE_DEFAULT_XEXP
+        "${SKATE3_TITLE_UPDATE_CODEGEN_ROOT}/default.xexp")
+    set(SKATE3_TITLE_UPDATE_EAWEBKIT_XEX
+        "${SKATE3_TITLE_UPDATE_CODEGEN_ROOT}/data/webkit/EAWebkit.xex")
+    set(SKATE3_TITLE_UPDATE_EAWEBKIT_XEXP
+        "${SKATE3_TITLE_UPDATE_CODEGEN_ROOT}/data/webkit/EAWebkit.xexp")
+
+    add_custom_command(
+        OUTPUT
+            "${SKATE3_TITLE_UPDATE_DEFAULT_XEX}"
+            "${SKATE3_TITLE_UPDATE_DEFAULT_XEXP}"
+            "${SKATE3_TITLE_UPDATE_EAWEBKIT_XEX}"
+            "${SKATE3_TITLE_UPDATE_EAWEBKIT_XEXP}"
+        COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/cmake/ExtractTitleUpdateXexp.py"
+            --tu "${SKATE3_EFFECTIVE_TITLE_UPDATE_PACKAGE}"
+            --game-root "${SKATE3_GAME_DATA_ROOT}"
+            --out-root "${SKATE3_TITLE_UPDATE_CODEGEN_ROOT}"
+        DEPENDS
+            "${CMAKE_CURRENT_SOURCE_DIR}/cmake/ExtractTitleUpdateXexp.py"
+            "${SKATE3_EFFECTIVE_TITLE_UPDATE_PACKAGE}"
+            "${SKATE3_GAME_DATA_ROOT}/default.xex"
+            "${SKATE3_GAME_DATA_ROOT}/data/webkit/EAWebkit.xex"
+        COMMENT "Staging Skate 3 title update patches for codegen"
+        VERBATIM
+    )
+    add_custom_target(skate3-title-update-codegen-inputs
+        DEPENDS
+            "${SKATE3_TITLE_UPDATE_DEFAULT_XEX}"
+            "${SKATE3_TITLE_UPDATE_DEFAULT_XEXP}"
+            "${SKATE3_TITLE_UPDATE_EAWEBKIT_XEX}"
+            "${SKATE3_TITLE_UPDATE_EAWEBKIT_XEXP}"
+    )
+
+    file(TO_CMAKE_PATH "${SKATE3_TITLE_UPDATE_DEFAULT_XEX}"
+        SKATE3_TITLE_UPDATE_DEFAULT_XEX_CONFIG)
+    file(TO_CMAKE_PATH "${SKATE3_TITLE_UPDATE_EAWEBKIT_XEX}"
+        SKATE3_TITLE_UPDATE_EAWEBKIT_XEX_CONFIG)
+    set(SKATE3_PATCHED_DEFAULT_XEX_LINE
+        "patched_file_path = \"${SKATE3_TITLE_UPDATE_DEFAULT_XEX_CONFIG}\"")
+    set(SKATE3_PATCHED_EAWEBKIT_XEX_LINE
+        "patched_file_path = \"${SKATE3_TITLE_UPDATE_EAWEBKIT_XEX_CONFIG}\"")
+    set(SKATE3_FUNCTION_CONFIG_INCLUDES
+        "  \"${SKATE3_SOURCE_DIR_CONFIG}/config/skate3_tu_functions.toml\",")
+    message(STATUS
+        "Skate 3 title update codegen enabled: ${SKATE3_EFFECTIVE_TITLE_UPDATE_PACKAGE}")
+endif()
 
 file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/manifests")
 
@@ -109,7 +185,9 @@ set(SKATE3_COMMON_SOURCES
     src/skate3_app_common.cpp
     src/skate3_fov.cpp
     src/skate3_iso_installer.cpp
+    src/skate3_title_update_installer.cpp
     src/skate3_user_settings.cpp
+    third_party/rexglue-sdk/thirdparty/crypto/sha256.cpp
 )
 if(APPLE)
     list(APPEND SKATE3_COMMON_SOURCES src/skate3_iso_installer_macos.mm)
@@ -138,6 +216,11 @@ target_include_directories(skate3 PRIVATE
     ${CMAKE_CURRENT_BINARY_DIR}/include
 )
 target_compile_definitions(skate3 PRIVATE SKATE3_BUILD_CONFIG="$<CONFIG>")
+if(NOT SKATE3_EFFECTIVE_TITLE_UPDATE_PACKAGE STREQUAL "")
+    target_compile_definitions(skate3 PRIVATE SKATE3_HAS_TITLE_UPDATE=1)
+else()
+    target_compile_definitions(skate3 PRIVATE SKATE3_HAS_TITLE_UPDATE=0)
+endif()
 
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/generated/sources.cmake")
     include(generated/sources.cmake)
@@ -167,7 +250,7 @@ if(APPLE)
 endif()
 
 if(WIN32)
-    target_link_libraries(skate3 PRIVATE comdlg32)
+    target_link_libraries(skate3 PRIVATE comdlg32 winhttp)
 endif()
 
 add_custom_target(skate3_stage_runtime_library
@@ -179,6 +262,22 @@ add_custom_target(skate3_stage_runtime_library
     VERBATIM
 )
 add_dependencies(skate3 skate3_stage_runtime_library)
+
+if(NOT SKATE3_EFFECTIVE_TITLE_UPDATE_PACKAGE STREQUAL "")
+    add_custom_target(skate3_stage_title_update_patches
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+            "$<TARGET_FILE_DIR:skate3>/game/data/webkit"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${SKATE3_TITLE_UPDATE_DEFAULT_XEXP}"
+            "$<TARGET_FILE_DIR:skate3>/game/default.xexp"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${SKATE3_TITLE_UPDATE_EAWEBKIT_XEXP}"
+            "$<TARGET_FILE_DIR:skate3>/game/data/webkit/EAWebkit.xexp"
+        DEPENDS skate3-title-update-codegen-inputs
+        VERBATIM
+    )
+    add_dependencies(skate3 skate3_stage_title_update_patches)
+endif()
 
 if(MSVC)
     target_compile_options(skate3 PRIVATE /utf-8)
