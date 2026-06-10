@@ -56,6 +56,10 @@ Create a `dlc` folder either beside the executable, inside the installed game fo
 or in the user data folder. Place the DLC package files in that
 folder and start the game.
 
+## True 21:9 Ultrawide
+
+The builds include an experimental true ultrawide aspect ratio mode at 21:9. You may notice occasional visual bugs or graphical glitches, especially around shadows. Performance is somewhat reduced.
+
 ## Controls
 
 - Standard Xbox controls using an Xbox controller are the preferred and main input method. DualShock and others are untested, but are likely to work with Steam Input through XInput.
