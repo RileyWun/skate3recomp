@@ -8,6 +8,8 @@
 
 #include <rex/cvar.h>
 
+#include "bit_cast_utils.h"
+
 namespace {
 
 constexpr double kDefaultFieldOfViewDegrees = 60.0;
@@ -15,22 +17,6 @@ constexpr double kFieldOfViewEpsilon = 0.001;
 constexpr double kDegreesToRadians = 3.14159265358979323846 / 180.0;
 
 std::atomic<uint32_t> g_projection_fov_override_bits{0};
-
-float FloatFromBits(uint32_t value) {
-  union {
-    uint32_t u;
-    float f;
-  } bits{value};
-  return bits.f;
-}
-
-uint32_t BitsFromFloat(float value) {
-  union {
-    float f;
-    uint32_t u;
-  } bits{value};
-  return bits.u;
-}
 
 }  // namespace
 

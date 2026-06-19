@@ -787,6 +787,10 @@ bool RunTitleUpdateInstallWizardBlocking(rex::ui::WindowedAppContext& app_contex
                                          rex::ui::ImGuiDrawer* drawer,
                                          rex::PathConfig runtime_paths,
                                          rex::PathConfig& installed_paths) {
+  struct InstallResult : public WizardInstallResult {
+    rex::PathConfig paths;
+  };
+  
   if (const char* automated_tu = std::getenv("SKATE3_INSTALL_TU");
       automated_tu != nullptr && *automated_tu != '\0') {
     std::string error;
@@ -809,11 +813,6 @@ bool RunTitleUpdateInstallWizardBlocking(rex::ui::WindowedAppContext& app_contex
     return true;
   }
 
-  struct InstallResult {
-    bool done = false;
-    bool ok = false;
-    rex::PathConfig paths;
-  };
   auto result = std::make_shared<InstallResult>();
 
   ShowTitleUpdateInstallWizard(drawer, runtime_paths,
@@ -823,50 +822,8 @@ bool RunTitleUpdateInstallWizardBlocking(rex::ui::WindowedAppContext& app_contex
                                  result->done = true;
                                });
 
-#if defined(_WIN32)
-  HWND hwnd = nullptr;
-  if (auto* win32_window = dynamic_cast<rex::ui::Win32Window*>(window)) {
-    hwnd = win32_window->hwnd();
-  }
-#endif
-
   REXLOG_INFO("Entering Skate 3 title update installer pump");
-  while (!result->done && !app_context.HasQuitFromUIThread()) {
-    app_context.ExecutePendingFunctionsFromUIThread();
-
-#if defined(_WIN32)
-    MSG message;
-    while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
-      if (message.message == WM_QUIT) {
-        app_context.QuitFromUIThread();
-        break;
-      }
-      TranslateMessage(&message);
-      DispatchMessageW(&message);
-    }
-    if (app_context.HasQuitFromUIThread()) {
-      break;
-    }
-    if (window) {
-      window->RequestPaint();
-    }
-    if (hwnd) {
-      RedrawWindow(hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE);
-    }
-#else
-    if (window) {
-      window->RequestPaint();
-    }
-#if !defined(__APPLE__)
-    while (gtk_events_pending()) {
-      gtk_main_iteration_do(FALSE);
-    }
-#endif
-#endif
-    std::this_thread::sleep_for(std::chrono::milliseconds(16));
-  }
-
-  if (!result->ok) {
+  if (!RunWizardEventPumpBlocking(app_context, window, result)) {
     REXLOG_INFO("Leaving title update installer pump without installation");
     return false;
   }

@@ -17,9 +17,15 @@
 #include <rex/graphics/ultrawide_debug.h>
 #include <rex/logging.h>
 
+#include "bit_cast_utils.h"
+
 inline bool Skate3UltrawideHasExpandedTargetAspect() {
-  if (!rex::cvar::Query<bool>("skate3_ultrawide") ||
-      !rex::cvar::Query<bool>("skate3_ultrawide_hor_plus") ||
+  // Fast path - single atomic load check before any cvar queries
+  if (!rex::cvar::Query<bool>("skate3_ultrawide")) {
+    return false;
+  }
+  
+  if (!rex::cvar::Query<bool>("skate3_ultrawide_hor_plus") ||
       !rex::graphics::ultrawide_debug::IsSkate3GameplayUltrawideActive()) {
     return false;
   }
@@ -28,20 +34,14 @@ inline bool Skate3UltrawideHasExpandedTargetAspect() {
          (16.0 / 9.0) + 0.01;
 }
 
+// Deprecated: Use skate3::FloatFromBits and skate3::BitsFromFloat from bit_cast_utils.h
+// These wrappers are kept for backward compatibility but will be removed in a future version.
 inline float Skate3UltrawideFloatFromU32(uint32_t value) {
-  union {
-    uint32_t u;
-    float f;
-  } bits{value};
-  return bits.f;
+  return skate3::FloatFromBits(value);
 }
 
 inline uint32_t Skate3UltrawideU32FromFloat(float value) {
-  union {
-    float f;
-    uint32_t u;
-  } bits{value};
-  return bits.u;
+  return skate3::BitsFromFloat(value);
 }
 
 inline double Skate3UltrawideMaybeOverrideGameplayFrustumAspect(uint32_t site_id,
