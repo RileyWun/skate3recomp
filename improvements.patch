@@ -1,0 +1,416 @@
+diff --git a/src/bit_cast_utils.h b/src/bit_cast_utils.h
+new file mode 100644
+index 0000000..a75f552
+--- /dev/null
++++ b/src/bit_cast_utils.h
+@@ -0,0 +1,26 @@
++// Copyright 2025 Skate 3 ReXGlue Recompiled Project
++// SPDX-License-Identifier: MIT
++//
++// Utility functions for bit-casting between floats and integers.
++// Centralized to avoid duplication across FOV, ultrawide, and other systems.
++
++#pragma once
++
++#include <cstdint>
++#include <bit>
++
++namespace skate3 {
++
++/// Convert a 32-bit integer representation to a float value.
++/// This is equivalent to reinterpret_cast but safe and portable.
++inline float FloatFromBits(uint32_t bits) {
++    return std::bit_cast<float>(bits);
++}
++
++/// Convert a float value to its 32-bit integer representation.
++/// This is equivalent to reinterpret_cast but safe and portable.
++inline uint32_t BitsFromFloat(float value) {
++    return std::bit_cast<uint32_t>(value);
++}
++
++}  // namespace skate3
+diff --git a/src/skate3_fov.cpp b/src/skate3_fov.cpp
+index d692427..ab962a7 100644
+--- a/src/skate3_fov.cpp
++++ b/src/skate3_fov.cpp
+@@ -8,6 +8,8 @@
+ 
+ #include <rex/cvar.h>
+ 
++#include "bit_cast_utils.h"
++
+ namespace {
+ 
+ constexpr double kDefaultFieldOfViewDegrees = 60.0;
+@@ -16,22 +18,6 @@ constexpr double kDegreesToRadians = 3.14159265358979323846 / 180.0;
+ 
+ std::atomic<uint32_t> g_projection_fov_override_bits{0};
+ 
+-float FloatFromBits(uint32_t value) {
+-  union {
+-    uint32_t u;
+-    float f;
+-  } bits{value};
+-  return bits.f;
+-}
+-
+-uint32_t BitsFromFloat(float value) {
+-  union {
+-    float f;
+-    uint32_t u;
+-  } bits{value};
+-  return bits.u;
+-}
+-
+ }  // namespace
+ 
+ void Skate3UpdateFieldOfViewOverride(double degrees) {
+diff --git a/src/skate3_iso_installer.cpp b/src/skate3_iso_installer.cpp
+index 01567d0..a4f0c5d 100644
+--- a/src/skate3_iso_installer.cpp
++++ b/src/skate3_iso_installer.cpp
+@@ -400,9 +400,7 @@ bool RunRexglueIsoInstallWizardBlocking(rex::ui::WindowedAppContext& app_context
+                                         rex::ui::ImGuiDrawer* drawer,
+                                         rex::PathConfig runtime_paths,
+                                         rex::PathConfig& installed_paths) {
+-  struct InstallResult {
+-    bool done = false;
+-    bool ok = false;
++  struct InstallResult : public WizardInstallResult {
+     rex::PathConfig paths;
+   };
+ 
+@@ -447,50 +445,8 @@ bool RunRexglueIsoInstallWizardBlocking(rex::ui::WindowedAppContext& app_context
+                                 result->done = true;
+                               });
+ 
+-#if defined(_WIN32)
+-  HWND hwnd = nullptr;
+-  if (auto* win32_window = dynamic_cast<rex::ui::Win32Window*>(window)) {
+-    hwnd = win32_window->hwnd();
+-  }
+-#endif
+-
+   REXLOG_INFO("Entering rexglue ISO installer pump");
+-  while (!result->done && !app_context.HasQuitFromUIThread()) {
+-    app_context.ExecutePendingFunctionsFromUIThread();
+-
+-#if defined(_WIN32)
+-    MSG message;
+-    while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
+-      if (message.message == WM_QUIT) {
+-        app_context.QuitFromUIThread();
+-        break;
+-      }
+-      TranslateMessage(&message);
+-      DispatchMessageW(&message);
+-    }
+-    if (app_context.HasQuitFromUIThread()) {
+-      break;
+-    }
+-    if (window) {
+-      window->RequestPaint();
+-    }
+-    if (hwnd) {
+-      RedrawWindow(hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE);
+-    }
+-#else
+-    if (window) {
+-      window->RequestPaint();
+-    }
+-#if !defined(__APPLE__)
+-    while (gtk_events_pending()) {
+-      gtk_main_iteration_do(FALSE);
+-    }
+-#endif
+-#endif
+-    std::this_thread::sleep_for(std::chrono::milliseconds(16));
+-  }
+-
+-  if (!result->ok) {
++  if (!RunWizardEventPumpBlocking(app_context, window, result)) {
+     REXLOG_INFO("Leaving rexglue ISO installer pump without installation");
+     return false;
+   }
+diff --git a/src/skate3_iso_installer.h b/src/skate3_iso_installer.h
+index 0750141..3e30747 100644
+--- a/src/skate3_iso_installer.h
++++ b/src/skate3_iso_installer.h
+@@ -5,6 +5,8 @@
+ 
+ #include <rex/rex_app.h>
+ 
++#include "skate3_wizard_utils.h"
++
+ namespace skate3 {
+ 
+ bool IsGameInstalled(const std::filesystem::path& game_root);
+diff --git a/src/skate3_title_update_installer.cpp b/src/skate3_title_update_installer.cpp
+index 56b3969..12a31be 100644
+--- a/src/skate3_title_update_installer.cpp
++++ b/src/skate3_title_update_installer.cpp
+@@ -787,6 +787,10 @@ bool RunTitleUpdateInstallWizardBlocking(rex::ui::WindowedAppContext& app_contex
+                                          rex::ui::ImGuiDrawer* drawer,
+                                          rex::PathConfig runtime_paths,
+                                          rex::PathConfig& installed_paths) {
++  struct InstallResult : public WizardInstallResult {
++    rex::PathConfig paths;
++  };
++  
+   if (const char* automated_tu = std::getenv("SKATE3_INSTALL_TU");
+       automated_tu != nullptr && *automated_tu != '\0') {
+     std::string error;
+@@ -809,11 +813,6 @@ bool RunTitleUpdateInstallWizardBlocking(rex::ui::WindowedAppContext& app_contex
+     return true;
+   }
+ 
+-  struct InstallResult {
+-    bool done = false;
+-    bool ok = false;
+-    rex::PathConfig paths;
+-  };
+   auto result = std::make_shared<InstallResult>();
+ 
+   ShowTitleUpdateInstallWizard(drawer, runtime_paths,
+@@ -823,50 +822,8 @@ bool RunTitleUpdateInstallWizardBlocking(rex::ui::WindowedAppContext& app_contex
+                                  result->done = true;
+                                });
+ 
+-#if defined(_WIN32)
+-  HWND hwnd = nullptr;
+-  if (auto* win32_window = dynamic_cast<rex::ui::Win32Window*>(window)) {
+-    hwnd = win32_window->hwnd();
+-  }
+-#endif
+-
+   REXLOG_INFO("Entering Skate 3 title update installer pump");
+-  while (!result->done && !app_context.HasQuitFromUIThread()) {
+-    app_context.ExecutePendingFunctionsFromUIThread();
+-
+-#if defined(_WIN32)
+-    MSG message;
+-    while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
+-      if (message.message == WM_QUIT) {
+-        app_context.QuitFromUIThread();
+-        break;
+-      }
+-      TranslateMessage(&message);
+-      DispatchMessageW(&message);
+-    }
+-    if (app_context.HasQuitFromUIThread()) {
+-      break;
+-    }
+-    if (window) {
+-      window->RequestPaint();
+-    }
+-    if (hwnd) {
+-      RedrawWindow(hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE);
+-    }
+-#else
+-    if (window) {
+-      window->RequestPaint();
+-    }
+-#if !defined(__APPLE__)
+-    while (gtk_events_pending()) {
+-      gtk_main_iteration_do(FALSE);
+-    }
+-#endif
+-#endif
+-    std::this_thread::sleep_for(std::chrono::milliseconds(16));
+-  }
+-
+-  if (!result->ok) {
++  if (!RunWizardEventPumpBlocking(app_context, window, result)) {
+     REXLOG_INFO("Leaving title update installer pump without installation");
+     return false;
+   }
+diff --git a/src/skate3_title_update_installer.h b/src/skate3_title_update_installer.h
+index cb1a67a..7ebd27d 100644
+--- a/src/skate3_title_update_installer.h
++++ b/src/skate3_title_update_installer.h
+@@ -5,6 +5,8 @@
+ 
+ #include <rex/rex_app.h>
+ 
++#include "skate3_wizard_utils.h"
++
+ namespace skate3 {
+ 
+ // True when both title update payloads (default.xexp and
+diff --git a/src/skate3_ultrawide_guest.h b/src/skate3_ultrawide_guest.h
+index d28d9a1..64bf44f 100644
+--- a/src/skate3_ultrawide_guest.h
++++ b/src/skate3_ultrawide_guest.h
+@@ -17,9 +17,15 @@
+ #include <rex/graphics/ultrawide_debug.h>
+ #include <rex/logging.h>
+ 
++#include "bit_cast_utils.h"
++
+ inline bool Skate3UltrawideHasExpandedTargetAspect() {
+-  if (!rex::cvar::Query<bool>("skate3_ultrawide") ||
+-      !rex::cvar::Query<bool>("skate3_ultrawide_hor_plus") ||
++  // Fast path - single atomic load check before any cvar queries
++  if (!rex::cvar::Query<bool>("skate3_ultrawide")) {
++    return false;
++  }
++  
++  if (!rex::cvar::Query<bool>("skate3_ultrawide_hor_plus") ||
+       !rex::graphics::ultrawide_debug::IsSkate3GameplayUltrawideActive()) {
+     return false;
+   }
+@@ -28,20 +34,14 @@ inline bool Skate3UltrawideHasExpandedTargetAspect() {
+          (16.0 / 9.0) + 0.01;
+ }
+ 
++// Deprecated: Use skate3::FloatFromBits and skate3::BitsFromFloat from bit_cast_utils.h
++// These wrappers are kept for backward compatibility but will be removed in a future version.
+ inline float Skate3UltrawideFloatFromU32(uint32_t value) {
+-  union {
+-    uint32_t u;
+-    float f;
+-  } bits{value};
+-  return bits.f;
++  return skate3::FloatFromBits(value);
+ }
+ 
+ inline uint32_t Skate3UltrawideU32FromFloat(float value) {
+-  union {
+-    float f;
+-    uint32_t u;
+-  } bits{value};
+-  return bits.u;
++  return skate3::BitsFromFloat(value);
+ }
+ 
+ inline double Skate3UltrawideMaybeOverrideGameplayFrustumAspect(uint32_t site_id,
+diff --git a/src/skate3_user_settings.cpp b/src/skate3_user_settings.cpp
+index 8a93f23..423205c 100644
+--- a/src/skate3_user_settings.cpp
++++ b/src/skate3_user_settings.cpp
+@@ -150,7 +150,10 @@ LocalProfile MakeDefaultProfile(std::string gamertag) {
+   return profile;
+ }
+ 
+-LocalProfile* FindSelectedProfile(LocalProfileStore& store) {
++// Template helper to find the selected profile, falling back to first profile if not found.
++// Works with both const and non-const LocalProfileStore instances.
++template<typename T>
++LocalProfile* FindSelectedProfileImpl(T& store) {
+   auto it = std::find_if(store.profiles.begin(), store.profiles.end(),
+                          [&](const LocalProfile& profile) {
+                            return profile.id == store.selected_profile;
+@@ -161,15 +164,12 @@ LocalProfile* FindSelectedProfile(LocalProfileStore& store) {
+   return store.profiles.empty() ? nullptr : &store.profiles.front();
+ }
+ 
++LocalProfile* FindSelectedProfile(LocalProfileStore& store) {
++  return FindSelectedProfileImpl(store);
++}
++
+ const LocalProfile* FindSelectedProfile(const LocalProfileStore& store) {
+-  auto it = std::find_if(store.profiles.begin(), store.profiles.end(),
+-                         [&](const LocalProfile& profile) {
+-                           return profile.id == store.selected_profile;
+-                         });
+-  if (it != store.profiles.end()) {
+-    return &*it;
+-  }
+-  return store.profiles.empty() ? nullptr : &store.profiles.front();
++  return const_cast<LocalProfile*>(FindSelectedProfileImpl(store));
+ }
+ 
+ void EnsureUsableProfileStore(LocalProfileStore& store, std::string default_gamertag) {
+diff --git a/src/skate3_wizard_utils.h b/src/skate3_wizard_utils.h
+new file mode 100644
+index 0000000..82cafe6
+--- /dev/null
++++ b/src/skate3_wizard_utils.h
+@@ -0,0 +1,86 @@
++// Copyright 2025 Skate 3 ReXGlue Recompiled Project
++// SPDX-License-Identifier: MIT
++//
++// Shared utilities for installer wizard dialogs.
++// Extracts common event loop patterns from ISO and Title Update installers.
++
++#pragma once
++
++#include <atomic>
++#include <chrono>
++#include <functional>
++#include <memory>
++#include <thread>
++
++#include <rex/ui/window.h>
++#include <rex/ui/windowed_app_context.h>
++#include <rex/logging.h>
++
++namespace skate3 {
++
++/// Result structure for blocking wizard operations.
++struct WizardInstallResult {
++  bool done = false;
++  bool ok = false;
++};
++
++/// Runs a platform-specific event pump while waiting for a wizard operation to complete.
++/// This extracts the common pattern used by both ISO and Title Update installers.
++///
++/// @param app_context The application context for UI thread operations.
++/// @param window Optional window for paint requests.
++/// @param result Shared atomic result structure to check for completion.
++/// @return true if the pump exited normally, false if the app is quitting.
++inline bool RunWizardEventPumpBlocking(rex::ui::WindowedAppContext& app_context,
++                                       rex::ui::Window* window,
++                                       const std::shared_ptr<WizardInstallResult>& result) {
++#if defined(_WIN32)
++  HWND hwnd = nullptr;
++  if (auto* win32_window = dynamic_cast<rex::ui::Win32Window*>(window)) {
++    hwnd = win32_window->hwnd();
++  }
++#endif
++
++  while (!result->done && !app_context.HasQuitFromUIThread()) {
++    app_context.ExecutePendingFunctionsFromUIThread();
++
++#if defined(_WIN32)
++    MSG message;
++    while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
++      if (message.message == WM_QUIT) {
++        app_context.QuitFromUIThread();
++        break;
++      }
++      TranslateMessage(&message);
++      DispatchMessageW(&message);
++    }
++    if (app_context.HasQuitFromUIThread()) {
++      break;
++    }
++    if (window) {
++      window->RequestPaint();
++    }
++    if (hwnd) {
++      RedrawWindow(hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE);
++    }
++#else
++    if (window) {
++      window->RequestPaint();
++    }
++#if !defined(__APPLE__)
++    while (gtk_events_pending()) {
++      gtk_main_iteration_do(FALSE);
++    }
++#endif
++#endif
++    std::this_thread::sleep_for(std::chrono::milliseconds(16));
++  }
++
++  if (!result->ok) {
++    return false;
++  }
++
++  return true;
++}
++
++}  // namespace skate3

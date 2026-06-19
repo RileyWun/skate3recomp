@@ -400,9 +400,7 @@ bool RunRexglueIsoInstallWizardBlocking(rex::ui::WindowedAppContext& app_context
                                         rex::ui::ImGuiDrawer* drawer,
                                         rex::PathConfig runtime_paths,
                                         rex::PathConfig& installed_paths) {
-  struct InstallResult {
-    bool done = false;
-    bool ok = false;
+  struct InstallResult : public WizardInstallResult {
     rex::PathConfig paths;
   };
 
@@ -447,50 +445,8 @@ bool RunRexglueIsoInstallWizardBlocking(rex::ui::WindowedAppContext& app_context
                                 result->done = true;
                               });
 
-#if defined(_WIN32)
-  HWND hwnd = nullptr;
-  if (auto* win32_window = dynamic_cast<rex::ui::Win32Window*>(window)) {
-    hwnd = win32_window->hwnd();
-  }
-#endif
-
   REXLOG_INFO("Entering rexglue ISO installer pump");
-  while (!result->done && !app_context.HasQuitFromUIThread()) {
-    app_context.ExecutePendingFunctionsFromUIThread();
-
-#if defined(_WIN32)
-    MSG message;
-    while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
-      if (message.message == WM_QUIT) {
-        app_context.QuitFromUIThread();
-        break;
-      }
-      TranslateMessage(&message);
-      DispatchMessageW(&message);
-    }
-    if (app_context.HasQuitFromUIThread()) {
-      break;
-    }
-    if (window) {
-      window->RequestPaint();
-    }
-    if (hwnd) {
-      RedrawWindow(hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE);
-    }
-#else
-    if (window) {
-      window->RequestPaint();
-    }
-#if !defined(__APPLE__)
-    while (gtk_events_pending()) {
-      gtk_main_iteration_do(FALSE);
-    }
-#endif
-#endif
-    std::this_thread::sleep_for(std::chrono::milliseconds(16));
-  }
-
-  if (!result->ok) {
+  if (!RunWizardEventPumpBlocking(app_context, window, result)) {
     REXLOG_INFO("Leaving rexglue ISO installer pump without installation");
     return false;
   }

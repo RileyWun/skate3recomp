@@ -150,7 +150,10 @@ LocalProfile MakeDefaultProfile(std::string gamertag) {
   return profile;
 }
 
-LocalProfile* FindSelectedProfile(LocalProfileStore& store) {
+// Template helper to find the selected profile, falling back to first profile if not found.
+// Works with both const and non-const LocalProfileStore instances.
+template<typename T>
+LocalProfile* FindSelectedProfileImpl(T& store) {
   auto it = std::find_if(store.profiles.begin(), store.profiles.end(),
                          [&](const LocalProfile& profile) {
                            return profile.id == store.selected_profile;
@@ -161,15 +164,12 @@ LocalProfile* FindSelectedProfile(LocalProfileStore& store) {
   return store.profiles.empty() ? nullptr : &store.profiles.front();
 }
 
+LocalProfile* FindSelectedProfile(LocalProfileStore& store) {
+  return FindSelectedProfileImpl(store);
+}
+
 const LocalProfile* FindSelectedProfile(const LocalProfileStore& store) {
-  auto it = std::find_if(store.profiles.begin(), store.profiles.end(),
-                         [&](const LocalProfile& profile) {
-                           return profile.id == store.selected_profile;
-                         });
-  if (it != store.profiles.end()) {
-    return &*it;
-  }
-  return store.profiles.empty() ? nullptr : &store.profiles.front();
+  return const_cast<LocalProfile*>(FindSelectedProfileImpl(store));
 }
 
 void EnsureUsableProfileStore(LocalProfileStore& store, std::string default_gamertag) {

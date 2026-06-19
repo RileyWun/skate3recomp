@@ -5,6 +5,8 @@
 
 #include <rex/rex_app.h>
 
+#include "skate3_wizard_utils.h"
+
 namespace skate3 {
 
 // True when both title update payloads (default.xexp and
